@@ -100,6 +100,34 @@ def _read_json_line(
         ) from exc
 
 
+def _read_response(
+    process: subprocess.Popen[str], expected_id: int, timeout_seconds: float
+) -> dict[str, Any]:
+    """Read messages until the expected JSON-RPC response arrives."""
+    deadline = datetime.now(tz=timezone.utc).timestamp() + timeout_seconds
+
+    while True:
+        remaining = deadline - datetime.now(tz=timezone.utc).timestamp()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Timed out waiting for codex app-server response id {expected_id}."
+            )
+
+        message = _read_json_line(process, timeout_seconds=remaining)
+        message_id = message.get("id")
+
+        if message_id == expected_id:
+            return message
+
+        if message_id is None and "method" in message:
+            continue
+
+        raise RuntimeError(
+            "Unexpected codex app-server message while waiting for "
+            f"id {expected_id}: {message}"
+        )
+
+
 def _send_json_line(process: subprocess.Popen[str], payload: dict[str, Any]) -> None:
     """Send a single JSON object to the app-server."""
     process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
@@ -145,12 +173,12 @@ def query_rate_limits(codex_home: Path) -> dict[str, Any]:
             raise RuntimeError("Failed to open pipes to codex app-server.")
 
         _send_json_line(process, INIT_REQUEST)
-        init_response = _read_json_line(process, timeout_seconds=10)
+        init_response = _read_response(process, expected_id=1, timeout_seconds=10)
         if init_response.get("id") != 1 or "result" not in init_response:
             raise RuntimeError(f"Unexpected initialize response: {init_response}")
 
         _send_json_line(process, RATE_LIMITS_REQUEST)
-        rate_response = _read_json_line(process, timeout_seconds=10)
+        rate_response = _read_response(process, expected_id=2, timeout_seconds=10)
         if rate_response.get("id") != 2:
             raise RuntimeError(f"Unexpected rate-limit response: {rate_response}")
         if "error" in rate_response:
